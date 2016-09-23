@@ -66,7 +66,8 @@ class AnalyticsManager:
         self._insert_lock = threading.Lock()
         self._n_inserts = 0
         self.bulk_insert = bulk_insert
-        self._bulk_size = 16
+        self._bulk_size = 10000
+        self._mini_batch_size = 16
         self._pipelined = 0
         self.track_users = track_users
         self.track_words = track_words
@@ -251,6 +252,46 @@ class AnalyticsManager:
         self.users.delete_all()
         self.words.delete_all()
 
+
+    def get_lost_data():
+        """
+        Reloads the lost data from the main database if Redis crashed.
+        """
+        # get the latest timestamp in Redis
+        props = self.events.properties()
+        latest_timestamp = props['second']['last']
+
+        mongo_cl = MongoClient(MONGO_URL)
+        db = mongo_cl[MONGO_DB]
+        coll = db[MONGO_COLLECTION]
+
+        # get data more recent than latest_timestamp
+        data = coll.find({'timestamp':{'$gt': latest_timestamp}})
+
+        #mapping event types from numbers to string
+        etype_str = {0:'', 1:'', 2:''}
+
+        for event in data:
+            timestamp, etype = event['timestamp'], etype_str[event['type']]
+            campID = event['campaign']
+            eventKey = '%d:%s' %(campID,etype)
+
+            self._inserts[timestamp][eventKey] += 1
+            self._n_inserts += 1
+
+            # check for the end of data
+            # done = True
+
+            if self._n_inserts >= self._bulk_size or done:
+                try:
+                    self.events.bulk_insert({t: {k:[v2] for k,v2 in v.items()} for t,v in  self._inserts.items()})
+                    self._inserts = defaultdict(Counter)
+                    self._n_inserts = 0
+                except Exception as e:
+                    msg = '%s: %s' %(type(e), e)
+                    self._log.error(msg)
+                    return -1
+        return 0
 
     def load(self):
         """

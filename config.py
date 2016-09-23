@@ -1,2 +1,6 @@
-REDIS_HOST = '162.243.217.160'
+REDIS_HOST = 'localhost'
 REDIS_PORT = 6379
+
+MONGO_URL = 'mongo://'
+MONGO_DB = 'speakol_crawler'
+MONGO_COLLECTION = 'roots_analytics'
