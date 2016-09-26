@@ -1,10 +1,13 @@
 from kairos import Timeseries
 from kairos.exceptions import UnknownInterval
 from pymongo import MongoClient
+
 from datetime import datetime, timedelta
 import time, redis, logging
 from collections import defaultdict, Counter
 import threading
+
+from config import *
 
 
 def setup_log(name):
@@ -21,12 +24,11 @@ def setup_log(name):
 
 
 class AnalyticsManager:
-    def __init__(self, client, loadFromDB=False, bulk_insert=False,
-                    track_users=False, track_words=False):
+    def __init__(self, client, loadFromDB=LOAD_DB, bulk_insert=BULK_INSERT,
+                    track_users=T_USER, track_words=T_WORDS):
         """
-        TODO: config redis persistence and restoring lost data.
+        TODO: config persistence
         TODO: populate memory from database
-        TODO: setup config file
         """
 
         # Redis server to send data to
@@ -36,11 +38,11 @@ class AnalyticsManager:
         # database
         if loadFromDB:
             try:
-                self.dbclient = MongoClient()
-                self._DB = dbclient['campaign_analytics']
+                self.dbclient = MongoClient(MONGO_URL)
+                self._DB = dbclient[MONGO_DB]
                 self.load()
             except:
-                self._log.error('ERROR: could not connect to MongoDB.')
+                self._log.error('could not connect to MongoDB.')
 
         self._intervals = {
           'second':{
@@ -53,8 +55,7 @@ class AnalyticsManager:
           },
           'hour':{
             'step':'1h',            # one hour
-            'steps':30*24,           # keep for 1 month
-            'steps':3
+            'steps':30*24           # keep for 1 month
           },
           'day':{
             'step':'1d',            # one day
@@ -109,8 +110,7 @@ class AnalyticsManager:
             return (-1, {'error': msg})
 
         if etype not in ['pview', 'imp', 'click']:
-            msg = 'wrong event type "%s",\
-                    valid values: pview, imp, click.' %etype
+            msg = 'wrong event type "%s", valid values: pview, imp, click.' %etype
             self._log.error(msg)
             return (-1, {'error': msg})
 
@@ -163,6 +163,8 @@ class AnalyticsManager:
             campID: (int)
             etype: event type (str). pview, imp, or click,
             interval: (str) second, minute, or hour. (default) minute,
+            start: (int) timestamp of the beginning of interval, (default) None,
+            end: (int) timestamp of the end of interval, (default) None,
             get_users: (bool) get online users. (default) True,
             get_camp_words: (bool) effective words for this campaign. (default) False,
             get_all_words: (bool) effective words for all campaigns. (default) False
@@ -180,18 +182,20 @@ class AnalyticsManager:
             if failure: { error: "error message" }
 
         TODO: check if campID exists
-        TODO: query by start and end
         """
         try:
             campID, etype = event['campID'], event['etype']
             interval = event.get('interval', 'minute')
+            start = event.get('start', 0)
+            end = event.get('end', time.time())
             get_users = event.get('get_users', True)
             get_camp_words = event.get('get_camp_words', False)
             get_all_words = event.get('get_all_words', False)
             eventKey = '%d:%s' %(campID,etype)
             userKey = '%d:online' %(campID)
+
         except Exception as e:
-            msg = 'ERROR: wrong event structure. %s' %e
+            msg = 'wrong event structure. %s' %e
             self._log.error(msg)
             return (-1, {'error': msg})
 
@@ -206,7 +210,7 @@ class AnalyticsManager:
         result = {}
 
         try:
-            data = self.events.series(eventKey, interval=interval)
+            data = self.events.series(eventKey, interval=interval, start=start, end=end)
             result['data'] = list(data.items())
 
             if self.track_users and get_users:
@@ -228,7 +232,7 @@ class AnalyticsManager:
                 result['all_words'] = sorted_words
 
         except UnknownInterval as e:
-            msg = 'ERROR: wrong interval type "%s",\
+            msg = 'wrong interval type "%s",\
                     valid values: second, minute, hour.' %str(interval)
             self._log.error(msg)
             return (-1, {'error': msg})
@@ -237,8 +241,6 @@ class AnalyticsManager:
             msg = '%s: %s.' %(type(e), e)
             self._log.error(msg)
             return (-1, {'error': msg})
-
-        #result = {'data': list(data.items()), 'users': users}
 
         return (0, result)
 
@@ -279,8 +281,8 @@ class AnalyticsManager:
             self._inserts[timestamp][eventKey] += 1
             self._n_inserts += 1
 
-            # check for the end of data
-            # done = True
+            if data.count - data.retrieved <= 0:
+                done = True
 
             if self._n_inserts >= self._bulk_size or done:
                 try:

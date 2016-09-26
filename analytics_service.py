@@ -71,6 +71,7 @@ class CampHandler(MainHandler):
 
         response_data = zlib.compress(json.dumps(data))
         self.set_status(200)
+        self.set_header("Content-Type", "json")
         self.set_header("Content-Encoding", "gzip")
         self.write(response_data)
 
